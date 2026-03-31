@@ -350,10 +350,23 @@ class TeleopSessionLifecycle:
             oxr_handles=oxr_handles,
         )
 
-        # Create and enter the TeleopSession
-        self._session = TeleopSession(session_config)
-        self._session.__enter__()
+        # Create and enter the TeleopSession.
+        # In standalone mode the session creates its own OpenXR instance and
+        # queries for a system (headset).  If no device is connected yet
+        # (e.g. Quest hasn't joined the CloudXR stream), this will raise a
+        # RuntimeError.  We catch it and defer, retrying on each step().
+        session = TeleopSession(session_config)
+        try:
+            session.__enter__()
+        except RuntimeError as e:
+            if not self._session_start_deferred_logged:
+                logger.info(
+                    f"IsaacTeleop session creation deferred (no XR device connected yet): {e}"
+                )
+                self._session_start_deferred_logged = True
+            return False
 
+        self._session = session
         logger.info(f"IsaacTeleop session started: {self._cfg.app_name}")
         return True
 
