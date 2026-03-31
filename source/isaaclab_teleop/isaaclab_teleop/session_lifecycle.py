@@ -292,12 +292,15 @@ class TeleopSessionLifecycle:
     def _try_start_session(self) -> bool:
         """Attempt to create and start the IsaacTeleop session.
 
-        Tries to acquire OpenXR handles from Kit's XR bridge.  If the
-        handles are available, creates and enters the ``TeleopSession``.
-        If the handles are not yet complete — either because the XR session
-        has not started or because the bridge component has not finished
-        registering — session creation is deferred and will be retried on
-        the next :meth:`step` call.
+        Tries to acquire OpenXR handles from Kit's XR bridge.  If the bridge
+        is available and the handles are complete, the session reuses Kit's
+        existing OpenXR session.  If the bridge is available but handles are
+        not yet complete (e.g. user hasn't clicked "Start AR"), session
+        creation is deferred and retried on the next :meth:`step` call.
+
+        If Kit's XR bridge is not available at all, the session is created
+        in **standalone mode** (``oxr_handles=None``), letting Isaac Teleop
+        create and manage its own OpenXR session internally.
 
         Returns:
             ``True`` if the session was successfully started (or was already
@@ -318,7 +321,9 @@ class TeleopSessionLifecycle:
 
         oxr_handles = self._acquire_kit_oxr_handles(OpenXRSessionHandles)
 
-        if oxr_handles is None:
+        if oxr_handles is None and self._kit_xr_bridge_available():
+            # Bridge extension is loaded but handles aren't ready yet
+            # (e.g. user hasn't clicked "Start AR") — defer and retry.
             if not self._session_start_deferred_logged:
                 if self._kit_xr_session_is_active():
                     logger.info(
@@ -331,6 +336,11 @@ class TeleopSessionLifecycle:
                     )
                 self._session_start_deferred_logged = True
             return False
+
+        if oxr_handles is None:
+            logger.info(
+                "Kit XR bridge not available; IsaacTeleop will create its own OpenXR session (standalone mode)"
+            )
 
         session_config = TeleopSessionConfig(
             app_name=self._cfg.app_name,
@@ -550,6 +560,31 @@ class TeleopSessionLifecycle:
             pass
 
     @staticmethod
+    def _kit_xr_bridge_available() -> bool:
+        """Check whether Kit's XR teleop bridge is fully functional.
+
+        The bridge is considered available only when both the base OpenXR
+        module (``omni.kit.xr.system.openxr``) is importable **and** it
+        exposes the handle-acquisition API that the teleop bridge provides
+        (``get_instance_proc_addr``).  The base module ships with Kit and
+        is always importable, but the teleop bridge extension
+        (``isaacsim.kit.xr.teleop.bridge``) adds the extra functions.
+        Without them, handles can never be acquired and session creation
+        would defer forever.
+
+        Returns:
+            ``True`` if the bridge API is fully available.
+        """
+        try:
+            import omni.kit.xr.system.openxr as openxr
+
+            # The teleop bridge adds get_instance_proc_addr; without it
+            # _acquire_kit_oxr_handles will always return None.
+            return hasattr(openxr, "get_instance_proc_addr")
+        except (ImportError, ModuleNotFoundError):
+            return False
+
+    @staticmethod
     def _kit_xr_session_is_active() -> bool:
         """Check whether Kit's XR system has an active OpenXR session.
 
@@ -589,10 +624,17 @@ class TeleopSessionLifecycle:
             logger.info("omni.kit.xr.system.openxr not available; IsaacTeleop will create its own OpenXR session")
             return None
 
-        instance = openxr.get_instance_handle()
-        session = openxr.get_session_handle()
-        space = openxr.get_stage_space_handle()
-        proc_addr = openxr.get_instance_proc_addr()
+        try:
+            instance = openxr.get_instance_handle()
+            session = openxr.get_session_handle()
+            space = openxr.get_stage_space_handle()
+            proc_addr = openxr.get_instance_proc_addr()
+        except AttributeError as e:
+            logger.info(
+                f"omni.kit.xr.system.openxr missing expected API ({e}); "
+                "IsaacTeleop will create its own OpenXR session"
+            )
+            return None
 
         if not all((instance, session, space, proc_addr)):
             logger.debug(
