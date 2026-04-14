@@ -70,6 +70,17 @@
     // note: the default interpreter is overridden when user selects a workspace interpreter
     //     in the status bar. For example, the virtual environment python interpreter
     "python.defaultInterpreterPath": "${workspaceFolder}/_isaac_sim/python.sh",
+    // Use venv (not pyenv) as the default env manager for the Python Environments extension
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    // Auto-activate the selected interpreter in the integrated terminal
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    // Force the venv env vars into every new integrated terminal (bulletproof fallback,
+    // in case the Python extension's auto-activate doesn't fire)
+    "terminal.integrated.env.linux": {
+        "VIRTUAL_ENV": "${workspaceFolder}/env_isaaclab",
+        "PATH": "${workspaceFolder}/env_isaaclab/bin:${env:PATH}"
+    },
     // ROS distribution
     "ros.distro": "noetic",
     // Language specific settings

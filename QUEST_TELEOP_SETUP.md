@@ -110,6 +110,38 @@ Wait for Isaac Sim to fully load and show "Teleoperation started."
     --visualizer kit --xr
 ```
 
+### Recording demonstrations
+
+To record a dataset while teleoperating (instead of just running the agent), use `record_demos.py`:
+
+```bash
+# G1 locomanipulation pick-place — record 15 demos to HDF5
+./isaaclab.sh -p scripts/tools/record_demos.py \
+    --device cpu \
+    --task Isaac-PickPlace-Locomanipulation-G1-Abs-v0 \
+    --teleop_device handtracking \
+    --dataset_file ./datasets/dataset_g1_locomanip.hdf5 \
+    --num_demos 15 \
+    --visualizer kit
+```
+
+> **Note:** The `Isaac-PickPlace-Locomanipulation-G1-Abs-v0` task's retargeting pipeline is hardcoded for **Oculus Touch controllers** (see `_build_g1_locomanipulation_pipeline` in `locomanipulation_g1_env_cfg.py`). The `--teleop_device handtracking` flag is effectively ignored for this task — hold the Quest controllers in your hands, don't use optical hand tracking.
+
+### Annotating recorded demos for Mimic
+
+After recording, annotate the dataset with Mimic subtask signals so it can be used as source data for dataset generation:
+
+```bash
+./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/annotate_demos.py \
+    --device cpu \
+    --task Isaac-Locomanipulation-G1-Abs-Mimic-v0 \
+    --input_file ./datasets/dataset_g1_locomanip.hdf5 \
+    --output_file ./datasets/dataset_annotated_g1_locomanip.hdf5 \
+    --visualizer kit
+```
+
+Note the task ID differs from the recording step — annotation uses the `-Mimic-v0` variant.
+
 ## Step 6: Connect Meta Quest 3
 
 1. On your Quest 3, open the **browser**

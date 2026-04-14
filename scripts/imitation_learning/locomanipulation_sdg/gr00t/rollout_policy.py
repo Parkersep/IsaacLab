@@ -37,6 +37,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import gymnasium as gym
+import numpy as np
 import torch
 from policy import Policy
 
@@ -274,8 +275,8 @@ def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, poli
 
     base_pose_inv = transform_inv(base_pose)
 
-    model_input = {
-        "video.ego_view": obs["policy"]["robot_pov_cam"],
+    # Build state tensors (torch) before converting to numpy.
+    state_tensors = {
         "state.left_hand_pose": transform_mul(base_pose_inv, left_hand_pose),
         "state.right_hand_pose": transform_mul(base_pose_inv, right_hand_pose),
         "state.left_hand_joint_positions": left_hand_joint_positions,
@@ -287,7 +288,17 @@ def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, poli
 
     if policy_quat_format == "wxyz":
         for key in _STATE_POSE_KEYS:
-            model_input[key] = _convert_pose_quat(model_input[key], to_fmt="wxyz")
+            state_tensors[key] = _convert_pose_quat(state_tensors[key], to_fmt="wxyz")
+
+    # Convert to numpy arrays in the format Gr00tSimPolicyWrapper expects:
+    # video: np.uint8 (B, T, H, W, C), state: np.float32 (B, T, D), language: tuple[str] (B,)
+    video = obs["policy"]["robot_pov_cam"]  # (B, H, W, C) torch uint8
+    model_input = {
+        "video.ego_view": video.unsqueeze(1).cpu().numpy().astype(np.uint8),
+        "annotation.human.action.task_description": ("",),  # language instruction (B,)
+    }
+    for key, val in state_tensors.items():
+        model_input[key] = val.unsqueeze(1).cpu().numpy().astype(np.float32)
 
     dummy_action = torch.zeros(1, 32)
     dummy_action[:, :28] = torch.cat(
@@ -336,8 +347,11 @@ def eval_policy(
     while simulation_app.is_running() and not simulation_app.is_exiting():
         if step % inference_interval == 0:
             model_input, dummy_action = build_model_input(env, base_goal, policy_quat_format)
-            action_dict = policy.policy.get_action(model_input)
-            action_buffer = torch.cat([torch.from_numpy(v) for v in action_dict.values()], dim=-1)
+            action_dict, _ = policy.policy.get_action(model_input)
+            # action_dict values are np.float32 (B, T, D) — take first batch, convert to torch
+            action_buffer = torch.cat(
+                [torch.from_numpy(v[0]) for v in action_dict.values()], dim=-1
+            )
             action_idx = 0
 
         if step < 0:
@@ -377,6 +391,10 @@ if __name__ == "__main__":
         env_cfg.sim.device = args_cli.device
         env_cfg.recorders.dataset_export_dir_path = os.path.dirname(args_cli.output_file)
         env_cfg.recorders.dataset_filename = os.path.basename(args_cli.output_file)
+        # Remove the SDG output recorder — it requires _locomanipulation_sdg_output_data
+        # which is only populated during data generation, not policy rollout.
+        if hasattr(env_cfg.recorders, "record_pre_step_locomanipulation_sdg_output_data"):
+            env_cfg.recorders.record_pre_step_locomanipulation_sdg_output_data = None
 
         env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
 
