@@ -433,7 +433,11 @@ class TeleopSessionLifecycle:
         try:
             result = self._session.step(external_inputs=external_inputs)
         except Exception as e:
-            logger.warning(f"IsaacTeleop session step failed (XR session likely torn down): {e}")
+            import traceback
+            logger.warning(
+                f"IsaacTeleop session step failed (XR session likely torn down): {e}\n"
+                f"{traceback.format_exc()}"
+            )
             self._teardown_dead_session()
             return None
 

@@ -40,6 +40,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from policy import Policy
+from scipy.spatial.transform import Rotation as ScipyRotation
 
 from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import convert_quat
@@ -168,6 +169,43 @@ _STATE_POSE_KEYS = (
 )
 
 
+def _to_sdg_relative_pose(target_pose_xyzw: np.ndarray, base_pose_xyzw: np.ndarray) -> np.ndarray:
+    """Compute relative pose matching convert_dataset.py's encoding convention.
+
+    Intentionally uses scalar_first=True on XYZW data (same mismatch as training data
+    was generated with) so the model receives the same distribution it was trained on.
+
+    Args:
+        target_pose_xyzw: World pose [x, y, z, qx, qy, qz, qw] shape (7,).
+        base_pose_xyzw: Base pose [x, y, z, qx, qy, qz, qw] shape (7,).
+
+    Returns:
+        Relative pose in SDG encoding, shape (7,).
+    """
+    r_base = ScipyRotation.from_quat(base_pose_xyzw[3:], scalar_first=True)
+    r_target = ScipyRotation.from_quat(target_pose_xyzw[3:], scalar_first=True)
+    r_rel = r_base.inv() * r_target
+    t_rel = r_base.inv().apply(target_pose_xyzw[:3] - base_pose_xyzw[:3])
+    return np.concatenate([t_rel, r_rel.as_quat(scalar_first=True)])
+
+
+def _from_sdg_relative_pose(relative_pose: np.ndarray, base_pose_xyzw: np.ndarray) -> np.ndarray:
+    """Inverse of _to_sdg_relative_pose; output numerically equals the original XYZW world pose.
+
+    Args:
+        relative_pose: Relative pose in SDG encoding, shape (7,).
+        base_pose_xyzw: Base pose [x, y, z, qx, qy, qz, qw] shape (7,).
+
+    Returns:
+        World pose numerically identical to original XYZW pose, shape (7,).
+    """
+    r_base = ScipyRotation.from_quat(base_pose_xyzw[3:], scalar_first=True)
+    r_rel = ScipyRotation.from_quat(relative_pose[3:], scalar_first=True)
+    r_world = r_base * r_rel
+    t_world = r_base.apply(relative_pose[:3]) + base_pose_xyzw[:3]
+    return np.concatenate([t_world, r_world.as_quat(scalar_first=True)])
+
+
 def _convert_pose_quat(pose: torch.Tensor, to_fmt: str) -> torch.Tensor:
     """Convert quaternion part of pose (..., 7) to target format. Env is XYZW.
 
@@ -273,29 +311,34 @@ def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, poli
     goal_pose = base_goal.get_pose()
     end_fixture_pose = env.get_end_fixture().get_pose()
 
-    base_pose_inv = transform_inv(base_pose)
+    # Use the same scipy scalar_first=True convention as convert_dataset.py so state poses
+    # match the training distribution (round-trip consistent despite the XYZW/WXYZ mismatch).
+    base_pose_np = base_pose.cpu().numpy().squeeze()  # (7,) XYZW
+
+    def _rel(pose_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert (1, 7) world pose to (1, 7) SDG-relative pose matching training encoding."""
+        pose_np = pose_tensor.cpu().numpy().squeeze()  # (7,)
+        rel_np = _to_sdg_relative_pose(pose_np, base_pose_np).astype(np.float32)
+        return torch.from_numpy(rel_np).unsqueeze(0)
 
     # Build state tensors (torch) before converting to numpy.
     state_tensors = {
-        "state.left_hand_pose": transform_mul(base_pose_inv, left_hand_pose),
-        "state.right_hand_pose": transform_mul(base_pose_inv, right_hand_pose),
+        "state.left_hand_pose": _rel(left_hand_pose),
+        "state.right_hand_pose": _rel(right_hand_pose),
         "state.left_hand_joint_positions": left_hand_joint_positions,
         "state.right_hand_joint_positions": right_hand_joint_positions,
-        "state.object_pose": transform_mul(base_pose_inv, object_pose),
-        "state.goal_pose": transform_mul(base_pose_inv, goal_pose),
-        "state.end_fixture_pose": transform_mul(base_pose_inv, end_fixture_pose),
+        "state.object_pose": _rel(object_pose),
+        "state.goal_pose": _rel(goal_pose),
+        "state.end_fixture_pose": _rel(end_fixture_pose),
     }
-
-    if policy_quat_format == "wxyz":
-        for key in _STATE_POSE_KEYS:
-            state_tensors[key] = _convert_pose_quat(state_tensors[key], to_fmt="wxyz")
+    # SDG scipy encoding already matches training distribution; no quat-format conversion needed.
 
     # Convert to numpy arrays in the format Gr00tSimPolicyWrapper expects:
     # video: np.uint8 (B, T, H, W, C), state: np.float32 (B, T, D), language: tuple[str] (B,)
     video = obs["policy"]["robot_pov_cam"]  # (B, H, W, C) torch uint8
     model_input = {
         "video.ego_view": video.unsqueeze(1).cpu().numpy().astype(np.uint8),
-        "annotation.human.action.task_description": ("",),  # language instruction (B,)
+        "annotation.human.action.task_description": ("Pick up and drop off the object",),  # language instruction (B,)
     }
     for key, val in state_tensors.items():
         model_input[key] = val.unsqueeze(1).cpu().numpy().astype(np.float32)
@@ -340,7 +383,6 @@ def eval_policy(
     )
 
     step = 0
-
     action_idx = 0
     inference_interval = 16
 
@@ -349,25 +391,26 @@ def eval_policy(
             model_input, dummy_action = build_model_input(env, base_goal, policy_quat_format)
             action_dict, _ = policy.policy.get_action(model_input)
             # action_dict values are np.float32 (B, T, D) — take first batch, convert to torch
-            action_buffer = torch.cat(
-                [torch.from_numpy(v[0]) for v in action_dict.values()], dim=-1
-            )
+            action_buffer = torch.cat([torch.from_numpy(v[0]) for v in action_dict.values()], dim=-1)
             action_idx = 0
 
         if step < 0:
             env.step(dummy_action)
         else:
-            base_pose = env.get_base().get_pose()
-            action = action_buffer.clone()
-            _convert_action_pose_quats_to_env(action, policy_quat_format)
+            action = action_buffer[action_idx].clone()  # (32,)
+            # Decode EEF poses from SDG-relative back to world frame.
+            # convert_dataset.py encodes action[t+k] relative to base[t+k], so we must decode
+            # using the CURRENT base pose (which is base[t+k] at step k), not a pose captured
+            # at inference time. Using a stale inference-time pose causes EEF targets to land
+            # in the wrong world frame whenever the base has moved (e.g. during navigation).
+            current_base_pose_np = env.get_base().get_pose().cpu().numpy().squeeze()
+            for pose_start in (0, 7):
+                rel_np = action[pose_start : pose_start + 7].numpy()
+                world_np = _from_sdg_relative_pose(rel_np, current_base_pose_np)
+                action[pose_start : pose_start + 7] = torch.from_numpy(world_np.astype(np.float32))
 
-            action[:, 0:7] = transform_mul(base_pose, action[:, 0:7])
-            action[:, 7:14] = transform_mul(base_pose, action[:, 7:14])
-
-            action[:, 28:31] = action[:, 28:31] * 1.0
-            _, _, reset_terminated, reset_time_outs, _ = env.step(
-                action[action_idx : action_idx + 1].mean(dim=0, keepdim=True)
-            )
+            action[28:31] = action[28:31] * 1.0
+            _, _, reset_terminated, reset_time_outs, _ = env.step(action.unsqueeze(0))
             if reset_terminated.any():
                 print("Reset terminated")
                 step = 0

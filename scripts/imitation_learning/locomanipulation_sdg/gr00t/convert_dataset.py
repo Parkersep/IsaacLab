@@ -17,36 +17,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import tqdm
-from scipy.spatial.transform import RigidTransform, Rotation
-
-
-def pose_to_transform(pose: np.ndarray) -> RigidTransform:
-    """Convert a 7D pose array (position + quaternion) to a RigidTransform.
-
-    Args:
-        pose: Pose array with shape (..., 7). First 3 elements are translation (x, y, z),
-            last 4 are quaternion in scalar-first (w, x, y, z) order.
-
-    Returns:
-        RigidTransform representing the pose.
-    """
-    translation = pose[..., :3]
-    rotation = Rotation.from_quat(pose[..., 3:], scalar_first=True)
-    return RigidTransform.from_components(translation, rotation)
-
-
-def pose_from_transform(transform: RigidTransform) -> np.ndarray:
-    """Convert a RigidTransform to a 7D pose array.
-
-    Args:
-        transform: The rigid transform to convert.
-
-    Returns:
-        Pose array with shape (..., 7): translation (3) and quaternion (4) in scalar-first order.
-    """
-    translation, rotation = transform.as_components()
-    quat = rotation.as_quat(scalar_first=True)
-    return np.concatenate([translation, quat], axis=-1)
+from scipy.spatial.transform import Rotation
 
 
 def get_total_object_displacement(demo) -> float:
@@ -69,17 +40,21 @@ def get_total_object_displacement(demo) -> float:
 def compute_relative_pose(target_pose: np.ndarray, base_pose: np.ndarray) -> np.ndarray:
     """Compute the pose of target relative to base.
 
+    Uses scalar_first=True with the XYZW quaternion data from Isaac Lab — same
+    convention as rollout_policy.py's _to_sdg_relative_pose.
+
     Args:
-        target_pose: 7D pose (position + quat) of the target in world frame.
-        base_pose: 7D pose (position + quat) of the base frame in world frame.
+        target_pose: 7D pose (position + quat) of the target in world frame, shape (..., 7).
+        base_pose: 7D pose (position + quat) of the base frame in world frame, shape (..., 7).
 
     Returns:
-        7D pose of target expressed in base frame.
+        7D pose of target expressed in base frame, shape (..., 7).
     """
-    base_pose = pose_to_transform(base_pose)
-    target_transform = pose_to_transform(target_pose)
-    relative_pose = pose_from_transform(base_pose.inv() * target_transform)
-    return relative_pose
+    r_base = Rotation.from_quat(base_pose[..., 3:], scalar_first=True)
+    r_target = Rotation.from_quat(target_pose[..., 3:], scalar_first=True)
+    r_rel = r_base.inv() * r_target
+    t_rel = r_base.inv().apply(target_pose[..., :3] - base_pose[..., :3])
+    return np.concatenate([t_rel, r_rel.as_quat(scalar_first=True)], axis=-1)
 
 
 def create_directory_structure(output_path: str, video_key: str = "observation.images.ego_view") -> None:

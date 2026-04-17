@@ -180,9 +180,11 @@ huggingface-cli download --repo-type dataset SensoriRobotics/g1_locomanipulation
 
 ```bash
 # on the remote instance, after huggingface-cli login
-huggingface-cli download \
+# use --include to grab only the run you want (e.g. run2)
+hf download \
     --repo-type dataset \
     SensoriRobotics/g1_locomanipulation_sdg \
+    --include "run2/*" \
     --local-dir /workspace/datasets/g1_locomanipulation_sdg
 ```
 
@@ -216,19 +218,39 @@ These three files are the only N1.5↔N1.6 surface; everything else in this pipe
 
 From the `Isaac-GR00T` directory, using **your GR00T env** (not `env_isaaclab`):
 
-```bash
-cd /path/to/Isaac-GR00T
+### Step 7a: Copy the modality config to the remote
 
-python scripts/gr00t_finetune.py \
-    --dataset-path /home/parker/Nvidia/IsaacLab3/datasets/datasets_train_lerobot \
-    --output-dir ./checkpoints/g1_locomanip \
-    --data-config g1_locomanipulation_sdg \
-    --embodiment-tag new_embodiment \
-    --num-gpus 1 \
-    --max-steps 10000 \
-    --save-steps 1000 \
-    --video-backend decord \
-    --report-to tensorboard
+The finetune script needs the `data_config.py` from this repo as its modality config. Copy it to the remote training machine first:
+
+```bash
+# from your local machine — create the target dir and scp the file
+ssh root@<REMOTE>  "mkdir -p /workspace/gr00t/examples/G1-SDG"
+scp /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sdg/gr00t/data_config.py \
+    root@<REMOTE>:/workspace/gr00t/examples/G1-SDG/g1_sdg_config.py
+```
+
+### Step 7b: Launch finetuning
+
+```bash
+cd /workspace/gr00t
+
+python gr00t/experiment/launch_finetune.py \
+    --base_model_path nvidia/GR00T-N1.6-3B \
+    --dataset_path /workspace/datasets/g1_locomanipulation_sdg \
+    --embodiment_tag NEW_EMBODIMENT \
+    --modality_config_path examples/G1-SDG/g1_sdg_config.py \
+    --output_dir /tmp/g1_finetune \
+    --num_gpus 1 \
+    --max_steps 20000 \
+    --save_steps 5000 \
+    --save_total_limit 5 \
+    --learning_rate 1e-4 \
+    --warmup_ratio 0.05 \
+    --weight_decay 1e-5 \
+    --global_batch_size 64 \
+    --dataloader_num_workers 4 \
+    --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
+    --use_wandb
 ```
 
 Confirm each flag with `--help` first if you're unsure whether N1.6 renamed any.
@@ -270,20 +292,22 @@ cd /home/parker/Nvidia/IsaacLab3
 ./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/gr00t/rollout_policy.py \
     --model_path /path/to/Isaac-GR00T/checkpoints/g1_locomanip/checkpoint-4000 \
     --embodiment_tag new_embodiment \
-    --dataset ./datasets/generated_dataset_g1_locomanip.hdf5 \
+    --dataset /home/parker/Nvidia/IsaacLab3/datasets/sdg_input/generated_dataset_g1_locomanipulation_sdg.hdf5 \
     --demo demo_0 \
     --output_file ./datasets/rollout_output.hdf5 \
     --task Isaac-G1-SteeringWheel-Locomanipulation \
     --device cpu \
     --enable_cameras \
-    --visualizer kit
+    --visualizer kit \
+    --policy_quat_format wxyz
 ```
 
 > **`--model_path`** must point to a **specific checkpoint subdirectory** (e.g. `checkpoint-4000`), not the parent training output dir. `Gr00tPolicy` uses `AutoModel.from_pretrained()` which expects model files directly in that directory.
 
+> **`--policy_quat_format wxyz` is required for checkpoints trained with this pipeline.** `convert_dataset.py` stores poses with WXYZ quaternions (`scalar_first=True`), but the Isaac Lab env provides XYZW. Without this flag the rollout sends unconverted XYZW quats to a policy trained on WXYZ, and applies the model's WXYZ action outputs directly to the env without converting back — causing the arms to appear inverted or move erratically.
+
 Options worth knowing:
 - `--randomize_placement` — if your checkpoint trained on randomized scenes.
-- `--policy_quat_format wxyz` — if your checkpoint was trained on the legacy wxyz quaternion format. Default is xyzw.
 
 ## Troubleshooting
 
@@ -294,7 +318,8 @@ Options worth knowing:
 | No `video.ego_view` key in LeRobot output | Step 4 was run without `--enable_cameras`. Re-run Step 4. |
 | Rollout can't find `policy` module | Run from IsaacLab root using `./isaaclab.sh -p` — the script's own dir is added to `sys.path` automatically. |
 | `CUDA OOM` during finetune | Lower batch size in `gr00t_finetune.py` args, or reduce `action_horizon` in `data_config.py`. |
-| Policy produces wild actions at rollout | Try `--policy_quat_format wxyz`. If that's not it, verify train/test normalization stats match (LeRobot `meta/` dir). |
+| Arms appear inverted / mirrored at rollout | Missing `--policy_quat_format wxyz`. `convert_dataset.py` trains on WXYZ quats; the env provides XYZW. Without conversion the policy misinterprets EEF orientations, producing inverted arm motion. |
+| Policy produces wild actions at rollout | Verify `--policy_quat_format wxyz` is set (see above). If still erratic, check train/test normalization stats match (LeRobot `meta/` dir). |
 
 ## Expected timing (reference: RTX ADA 6000)
 
