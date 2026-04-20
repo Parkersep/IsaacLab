@@ -51,6 +51,10 @@ g1_locomanipulation_sdg_config = {
             "base_height",
         ],
     ),
+    "language": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["annotation.human.action.task_description"],
+    ),
 }
 
 

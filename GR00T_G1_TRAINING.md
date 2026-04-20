@@ -422,12 +422,16 @@ scp /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sd
 
 ### Step 7b: Launch finetuning
 
+The N1.6 `launch_finetune.py` takes a **single** `--dataset_path` pointing at one LeRobot dataset root (the dir with `meta/info.json`). Pick the variant below that matches your data layout.
+
+**Single run** — point `--dataset_path` at one LeRobot root:
+
 ```bash
 cd /workspace/gr00t
 
 python gr00t/experiment/launch_finetune.py \
     --base_model_path nvidia/GR00T-N1.6-3B \
-    --dataset_path /workspace/datasets/g1_locomanipulation_sdg \
+    --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run2 \
     --embodiment_tag NEW_EMBODIMENT \
     --modality_config_path examples/G1-SDG/g1_sdg_config.py \
     --output_dir /tmp/g1_finetune \
@@ -443,6 +447,40 @@ python gr00t/experiment/launch_finetune.py \
     --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
     --use_wandb
 ```
+
+**Multiple runs** — use the `launch_finetune_multirun.py` wrapper in this repo, which adds `--extra_dataset_paths` on top of the stock N1.6 CLI. All paths become one `SingleDatasetConfig` and are concatenated proportionally by episode count.
+
+Copy the wrapper to the remote (from your local machine):
+
+```bash
+scp /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sdg/gr00t/launch_finetune_multirun.py \
+    root@<REMOTE>:/workspace/gr00t/launch_finetune_multirun.py
+```
+
+Then on the remote, from `/workspace/gr00t`:
+
+```bash
+python launch_finetune_multirun.py \
+    --base_model_path nvidia/GR00T-N1.6-3B \
+    --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run2 \
+    --extra_dataset_paths /workspace/datasets/g1_locomanipulation_sdg/run3 \
+    --embodiment_tag NEW_EMBODIMENT \
+    --modality_config_path examples/G1-SDG/g1_sdg_config.py \
+    --output_dir /tmp/g1_finetune \
+    --num_gpus 1 \
+    --max_steps 40000 \
+    --save_steps 8000 \
+    --save_total_limit 5 \
+    --learning_rate 1e-4 \
+    --warmup_ratio 0.05 \
+    --weight_decay 1e-5 \
+    --global_batch_size 96 \
+    --dataloader_num_workers 4 \
+    --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
+    --use_wandb
+```
+
+`--extra_dataset_paths` accepts any number of paths (e.g. `... run3 run4 run5`), so you can keep adding runs without touching the wrapper.
 
 Confirm each flag with `--help` first if you're unsure whether N1.6 renamed any.
 
