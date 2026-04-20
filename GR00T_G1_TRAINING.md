@@ -24,6 +24,56 @@ End-to-end walkthrough: from the teleop recording you already captured in `QUEST
 
 ---
 
+## Setup
+
+One-time setup for the end-to-end pipeline. Steps 1–3 run locally; Step 4 (the heavy SDG render pass) can run on a rented GPU via the datagen Docker image built here. Steps 7–8 have their own env (your Isaac-GR00T clone) — see Step 6.
+
+### 0.1 Local prerequisites
+
+- **Quest headset + controllers** (Step 1 only — teleop is the one step that can't be moved to the cloud).
+- **Isaac Lab 3 `env_isaaclab` venv activated.** If you haven't bootstrapped it yet: `./isaaclab.sh --install`.
+- **Docker** (only needed if you want to run Step 4 remotely). Confirm with `docker info`.
+- **HuggingFace CLI.** `pip install "huggingface_hub[cli]>=0.34,<1.0"` then `hf auth login` (token needs `write` scope for dataset pushes). Datasets live under the `SensoriRobotics` org. The `<1.0` upper bound avoids a `huggingface_hub` 1.x that breaks `transformers <5` during GR00T finetune.
+- **vast.ai CLI** (only for remote Step 4). `pipx install vastai && vastai set api-key <KEY>`.
+
+### 0.2 Build and push the datagen Docker image (one-time, optional)
+
+Skip this if you'll run Step 4 locally. Otherwise, bake the develop-branch checkout on top of NVIDIA's pre-built `nvcr.io/nvidia/isaac-lab:3.0.0-beta1` so any rented GPU can pull the exact code that runs on your workstation:
+
+**Run: Local**
+```bash
+cd /home/parker/Nvidia/IsaacLab3
+
+# build (~30 GB image; base is pulled from NGC, public)
+docker build -t par4ker/isaaclab3-datagen:develop \
+    -f docker/Dockerfile.datagen .
+
+# push to Docker Hub
+docker login
+docker push par4ker/isaaclab3-datagen:develop
+```
+
+After the first push, confirm the repo is public at `hub.docker.com/r/par4ker/isaaclab3-datagen` → **Settings** → **Visibility: Public**. vast.ai then pulls anonymously.
+
+### 0.3 Quick remote setup (automated)
+
+Once the image is on Docker Hub, the wrapper script creates a vast.ai instance, waits for SSH, and logs into HF for you:
+
+**Run: Local**
+```bash
+bash scripts/imitation_learning/locomanipulation_sdg/vast_ai_datagen_setup.sh \
+    --offer-id <OFFER_ID> \
+    --hf-token <HF_TOKEN>
+
+# Optional flags:
+#   --disk <GB>     disk size in GB (default: 200 — 2× expected HDF5 per 1000 demos)
+#   --image <IMG>   Docker image (default: par4ker/isaaclab3-datagen:develop)
+```
+
+Find `<OFFER_ID>` with `vastai search offers 'gpu_name=RTX_4090 num_gpus=1 disk_space>=200 inet_down>=200' -o 'dph+'`. Once the script finishes, SSH in and jump straight to Step 2 (annotate) or Step 4 (SDG) pointing paths at `/workspace/datasets`.
+
+---
+
 ## Step 1: Record demonstrations
 
 Already covered in [`QUEST_TELEOP_SETUP.md`](./QUEST_TELEOP_SETUP.md) → "Recording demonstrations" under Step 5. Recap:
@@ -42,10 +92,48 @@ Reminders:
 - **Use the Quest Touch controllers**, not optical hand tracking — the G1 locomanip retargeting pipeline is hardcoded for controllers.
 - Collect at least 5 good demos; more is better. Quality > quantity.
 
+### Step 1b (optional): Push recorded demos to HuggingFace Hub
+
+If Steps 2–5 will run on a rented GPU (vast.ai, RunPod, Lambda, etc.), pushing the teleop HDF5 to HF Hub once is much simpler than scp-ing it to every instance. Teleop is the only step that has to stay on your workstation; everything after can pull this file from HF.
+
+**Run: Local (Isaac Lab workstation)**
+```bash
+# one-time auth (if you haven't)
+hf auth login
+
+# upload under the SensoriRobotics org as a private dataset
+hf upload \
+    --repo-type dataset \
+    --private \
+    SensoriRobotics/g1_locomanipulation_teleop \
+    ./datasets/dataset_g1_locomanip.hdf5 \
+    dataset_g1_locomanip.hdf5
+```
+
+The third positional arg (`dataset_g1_locomanip.hdf5`) is the path **inside the repo** — pin it so appending more recordings later (e.g. `dataset_g1_locomanip_run2.hdf5`) doesn't overwrite prior uploads.
+
+(Swap `SensoriRobotics` for `SensoriDev` if you'd rather push to your personal namespace. The org namespace is preferred for shared team datasets.)
+
+**Pull on a cloud instance** (before Step 2):
+
+```bash
+# on the remote instance, after `hf auth login`
+hf download \
+    --repo-type dataset \
+    SensoriRobotics/g1_locomanipulation_teleop \
+    --include "mimic_dataset_g1_locomanip.hdf5" \
+    --local-dir /workspace/datasets/teleop
+```
+
+Then point `--input_file` at `/workspace/datasets/teleop/dataset_g1_locomanip.hdf5` in Step 2.
+
+**Size expectations:** a raw teleop HDF5 from ~5–10 demos is typically 10–200 MB (state-only, no camera frames yet), so the upload is fast — no LFS concerns at this stage.
+
 ## Step 2: Annotate demonstrations
 
 Tag subtask boundaries. Already in [`QUEST_TELEOP_SETUP.md`](./QUEST_TELEOP_SETUP.md) → "Annotating recorded demos for Mimic":
 
+**Run: Local**
 ```bash
 ./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/annotate_demos.py \
     --device cpu \
@@ -55,10 +143,28 @@ Tag subtask boundaries. Already in [`QUEST_TELEOP_SETUP.md`](./QUEST_TELEOP_SETU
     --output_file ./datasets/dataset_annotated_g1_locomanip.hdf5
 ```
 
+**Run: Remote (vast.ai datagen instance)**
+
+Assumes you pulled the raw teleop HDF5 from HF into `/workspace/datasets/teleop/` (Step 1b). Output stays on the mounted volume so it survives instance teardown:
+
+```bash
+cd /workspace/IsaacLab
+
+./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/annotate_demos.py \
+    --device cpu \
+    --visualizer none \
+    --task Isaac-Locomanipulation-G1-Abs-Mimic-v0 \
+    --input_file /workspace/datasets/teleop/dataset_g1_locomanip.hdf5 \
+    --output_file /workspace/datasets/dataset_annotated_g1_locomanip.hdf5
+```
+
+Note: if annotation requires GUI interaction in your workflow, do this step locally before uploading, and pull the annotated HDF5 on the remote (`SensoriRobotics/g1_locomanipulation_teleop` already hosts `mimic_dataset_g1_locomanip.hdf5` which skips Steps 2–3 entirely).
+
 ## Step 3: Mimic-generate 1000 demos (state-only)
 
 Use the annotated handful to bootstrap a larger dataset:
 
+**Run: Local**
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     ./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/generate_dataset.py \
@@ -68,6 +174,22 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     --generation_num_trials 1000 \
     --input_file ./datasets/dataset_annotated_g1_locomanip.hdf5 \
     --output_file ./datasets/generated_dataset_g1_locomanip.hdf5
+```
+
+**Run: Remote (vast.ai datagen instance)**
+
+The env-var prefix is baked into the datagen image (`ENV OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 ...`), so you can drop it. Bump `--num_envs` if the instance has plenty of RAM — an RTX 4090 host typically handles 40+ without swap:
+
+```bash
+cd /workspace/IsaacLab
+
+./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/generate_dataset.py \
+    --device cpu \
+    --visualizer none \
+    --num_envs 40 \
+    --generation_num_trials 1000 \
+    --input_file /workspace/datasets/dataset_annotated_g1_locomanip.hdf5 \
+    --output_file /workspace/datasets/generated_dataset_g1_locomanip.hdf5
 ```
 
 > **Notes on the env-var prefix and flags:**
@@ -86,6 +208,7 @@ Expected: ~65–82% success over 1000 trials, ~18–40 min on a decent GPU. Bump
 
 This is the step that converts state-only Mimic output into a visuomotor dataset GR00T can consume. It runs the manipulation data through a scene that adds point-to-point navigation and renders cameras.
 
+**Run: Local**
 ```bash
 ./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/generate_data.py \
     --device cpu \
@@ -94,12 +217,35 @@ This is the step that converts state-only Mimic output into a visuomotor dataset
     --dataset ./datasets/generated_dataset_g1_locomanip.hdf5 \
     --num_runs 1 \
     --lift_step 60 \
-    --navigate_step 130 \
+    --navigate_step 119 \
     --output_file ./datasets/generated_dataset_g1_locomanipulation_sdg.hdf5 \
     --enable_cameras \
     --randomize_placement \
-    --visualizer kit
+    --visualizer kit 
 ```
+
+**Run: Remote (vast.ai datagen instance)**
+
+Assumes you already pulled the Mimic-generated input from HF into `/workspace/datasets/teleop/` (see Step 1b pull). Use `/workspace/datasets/` for both input and output so the results land on the mounted volume instead of ephemeral container storage:
+
+```bash
+cd /workspace/isaaclab
+
+./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/generate_data.py \
+    --device cpu \
+    --kit_args="--enable isaacsim.replicator.mobility_gen" \
+    --task="Isaac-G1-SteeringWheel-Locomanipulation" \
+    --dataset /workspace/datasets/teleop/mimic_dataset_g1_locomanip.hdf5 \
+    --num_runs 500 \
+    --lift_step 60 \
+    --navigate_step 119 \
+    --output_file /workspace/datasets/vla_dataset_g1_locomanipulation_sdg.hdf5 \
+    --enable_cameras \
+    --randomize_placement \
+    --visualizer none
+```
+
+Note `--visualizer none` (lowercase) on the headless remote — `kit` requires a display.
 
 Key flags:
 - `--enable_cameras` — **required** for GR00T; this is what renders the ego-view camera.
@@ -135,6 +281,7 @@ Creates `./datasets/plots/nav_trajectories/demo_<n>.png` for every episode in th
 
 GR00T N1.5/N1.6 both expect data in LeRobot (GNx) format. The converter takes a **directory** of HDF5 files (not a single file) so you can batch multiple runs together.
 
+**Run: Local**
 ```bash
 mkdir -p ./datasets/sdg_input
 mv ./datasets/generated_dataset_g1_locomanipulation_sdg.hdf5 ./datasets/sdg_input/
@@ -142,6 +289,18 @@ mv ./datasets/generated_dataset_g1_locomanipulation_sdg.hdf5 ./datasets/sdg_inpu
 ./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/gr00t/convert_dataset.py \
     ./datasets/sdg_input \
     ./datasets/datasets_train_lerobot
+```
+
+**Run: Remote (vast.ai datagen instance)**
+```bash
+cd /workspace/IsaacLab
+
+mkdir -p /workspace/datasets/sdg_input
+mv /workspace/datasets/vla_dataset_g1_locomanipulation_sdg.hdf5 /workspace/datasets/sdg_input/
+
+./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/gr00t/convert_dataset.py \
+    /workspace/datasets/sdg_input \
+    /workspace/datasets/datasets_train_lerobot
 ```
 
 Note: the args are **positional** (`input_dir` then `output_path`) — no `--` flags. Episodes with very low object displacement are skipped automatically.
@@ -155,14 +314,29 @@ If you're training on a remote machine (vast.ai, RunPod, Lambda, etc.), pushing 
 **Run: Local (Isaac Lab workstation)**
 ```bash
 # one-time auth (if you haven't)
-huggingface-cli login
+hf auth login
 
 # upload under the SensoriRobotics org as a private dataset
-huggingface-cli upload \
+hf upload \
     --repo-type dataset \
     --private \
     SensoriRobotics/g1_locomanipulation_sdg \
     ./datasets/datasets_train_lerobot
+```
+
+**Run: Remote (vast.ai datagen instance)**
+
+If you ran Step 5 on the remote, push from there — avoids scp-ing 10–50 GB back home:
+
+```bash
+# vast.ai datagen instance is already logged in (from Step 0.3 --hf-token); pin
+# a run subfolder so subsequent uploads don't overwrite prior runs.
+hf upload \
+    --repo-type dataset \
+    --private \
+    SensoriRobotics/g1_locomanipulation_sdg \
+    /workspace/datasets/datasets_train_lerobot \
+    run3
 ```
 
 (Swap `SensoriRobotics` for `SensoriDev` if you'd rather push to your personal namespace. The org namespace is preferred for shared team datasets.)
@@ -170,7 +344,7 @@ huggingface-cli upload \
 First upload sends everything; subsequent uploads send only deltas (git-lfs under the hood). Verify:
 
 ```bash
-huggingface-cli download --repo-type dataset SensoriRobotics/g1_locomanipulation_sdg \
+hf download --repo-type dataset SensoriRobotics/g1_locomanipulation_sdg \
     --include "meta/*" --local-dir /tmp/verify_hf && cat /tmp/verify_hf/meta/info.json
 ```
 
@@ -179,16 +353,33 @@ huggingface-cli download --repo-type dataset SensoriRobotics/g1_locomanipulation
 **Pull on a cloud training instance:**
 
 ```bash
-# on the remote instance, after huggingface-cli login
-# use --include to grab only the run you want (e.g. run2)
+# on the remote instance, after `hf auth login`
+# full dataset:
 hf download \
     --repo-type dataset \
     SensoriRobotics/g1_locomanipulation_sdg \
-    --include "run2/*" \
+    --local-dir /workspace/datasets/g1_locomanipulation_sdg
+
+# only a specific run subfolder (e.g. run2) — use "run2/**" to recurse into
+# data/, videos/, and meta/. A single-star glob "run2/*" only matches files
+# directly in run2/ and silently skips the subdirectories you actually need.
+hf download \
+    --repo-type dataset \
+    SensoriRobotics/g1_locomanipulation_sdg \
+    --include "run2/**" \
+    --local-dir /workspace/datasets/g1_locomanipulation_sdg
+
+# multiple runs in one pull — pass several patterns to --include separated by
+# spaces. Finetune can then train on the union by pointing --dataset-path at
+# the parent dir.
+hf download \
+    --repo-type dataset \
+    SensoriRobotics/g1_locomanipulation_sdg \
+    --include "run2/**" "run3/**" \
     --local-dir /workspace/datasets/g1_locomanipulation_sdg
 ```
 
-Then pass `--dataset-path /workspace/datasets/g1_locomanipulation_sdg` to `gr00t_finetune.py` in Step 7.
+Files land under `/workspace/datasets/g1_locomanipulation_sdg/run2/...` since HF preserves repo paths. Point `--dataset-path` at `/workspace/datasets/g1_locomanipulation_sdg/run2` in Step 7 (or use the parent dir for the full-repo / multi-run pull).
 
 See also: `/home/parker/VLA_MODEL/Groot_projects/Isaac-GR00T/Notes/cloud_training_vastai.md` for the full vast.ai deployment workflow that wraps around this.
 
@@ -241,13 +432,13 @@ python gr00t/experiment/launch_finetune.py \
     --modality_config_path examples/G1-SDG/g1_sdg_config.py \
     --output_dir /tmp/g1_finetune \
     --num_gpus 1 \
-    --max_steps 20000 \
-    --save_steps 5000 \
+    --max_steps 40000 \
+    --save_steps 8000 \
     --save_total_limit 5 \
     --learning_rate 1e-4 \
     --warmup_ratio 0.05 \
     --weight_decay 1e-5 \
-    --global_batch_size 64 \
+    --global_batch_size 96 \
     --dataloader_num_workers 4 \
     --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
     --use_wandb
@@ -299,8 +490,11 @@ cd /home/parker/Nvidia/IsaacLab3
     --device cpu \
     --enable_cameras \
     --visualizer kit \
+    --randomize_placement \
     --policy_quat_format wxyz
 ```
+
+> **`--randomize_placement` is required for checkpoints trained with fixture randomization.** Without it, `setup_navigation_scene` skips `place_randomly`, so the drop-off bench stays at its config-default pose (`[-2, -3.55, -0.3]`, −45° yaw) across all resets — which is out-of-distribution for a policy trained on random bench placements and usually produces wrong-direction navigation.
 
 > **`--model_path`** must point to a **specific checkpoint subdirectory** (e.g. `checkpoint-4000`), not the parent training output dir. `Gr00tPolicy` uses `AutoModel.from_pretrained()` which expects model files directly in that directory.
 
@@ -332,6 +526,41 @@ Options worth knowing:
 | 8. Rollout (50 episodes) | minutes |
 
 Your hardware (RTX 5070 Ti per `QUEST_TELEOP_SETUP.md` prereqs) should land in the same ballpark for generation, and finetuning will be bottlenecked by VRAM + step count.
+
+## Remote data generation on vast.ai (Docker)
+
+If you want to run Steps 2–5 on a rented GPU (to produce 1k+ demos without tying up your workstation), the datagen Docker image built in **Setup 0.2** carries your develop-branch source into any vast.ai instance. Teleop (Step 1) still has to happen locally because it needs the Quest hardware — everything after is headless-capable.
+
+### Option A: Automated (script)
+
+Use the wrapper from Setup 0.3 — one command creates the instance, waits for SSH, and logs into HF:
+
+```bash
+bash scripts/imitation_learning/locomanipulation_sdg/vast_ai_datagen_setup.sh \
+    --offer-id <OFFER_ID> \
+    --hf-token <HF_TOKEN> \
+    --disk 200
+```
+
+### Option B: Manual
+
+1. Launch a vast.ai instance with image `par4ker/isaaclab3-datagen:develop`, a GPU (RTX 4090 or better for Step 4), and a volume mounted at `/workspace/datasets` (size ~2× the expected HDF5 per the timing table above — e.g. 200 GB for 1000 demos).
+2. SSH in and set up auth + data:
+   ```bash
+   hf auth login  # paste a token with repo write
+   hf download --repo-type dataset \
+       SensoriRobotics/g1_locomanipulation_teleop \
+       --local-dir /workspace/datasets/teleop
+   ```
+3. Run Steps 2 → 5 as documented above, pointing paths at `/workspace/datasets`.
+4. Push the generated LeRobot output back to HF:
+   ```bash
+   hf upload --repo-type dataset --private \
+       SensoriRobotics/g1_locomanipulation_sdg \
+       /workspace/datasets/datasets_train_lerobot_run3 run3
+   ```
+
+Image size is ~30 GB (Isaac Sim base is ~20 GB on its own); first pull on vast.ai takes 5–10 min on a fast instance.
 
 ## References
 

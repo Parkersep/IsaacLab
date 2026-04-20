@@ -19,6 +19,8 @@ docker/cluster/exports/
 docker/.container.cfg
 # ignore recordings
 recordings/
+# ignore generated datasets (large HDF5/LeRobot dumps)
+datasets/
 # ignore __pycache__
 **/__pycache__/
 **/*.egg-info/

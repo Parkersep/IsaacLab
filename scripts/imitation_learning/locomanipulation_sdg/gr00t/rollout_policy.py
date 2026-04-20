@@ -60,6 +60,19 @@ from isaaclab_mimic.locomanipulation_sdg.transform_utils import (
 from isaaclab_tasks.utils import parse_env_cfg
 
 
+def _sync_simulation_state(env: "LocomanipulationSDGEnv") -> None:
+    """Push USD pose writes into physics, step, and sync buffers back out.
+
+    Mirrors :func:`generate_data.sync_simulation_state` so rollout fixture
+    randomization is persisted the same way it was during dataset generation.
+    Without this, :meth:`place_randomly` writes the new fixture pose to USD but
+    the next env step reverts it (and the camera renders the stale pose).
+    """
+    env.scene.write_data_to_sim()
+    env.sim.step(render=False)
+    env.scene.update(dt=env.physics_dt)
+
+
 def _clone_state(state: dict) -> dict:
     """Deep clone state dict so we do not mutate the episode's stored initial state.
 
@@ -266,15 +279,14 @@ def setup_navigation_scene(
     )
 
     # Randomize fixture placement if enabled
-    if randomize_placement:
-        fixtures = [env.get_end_fixture()] + env.get_obstacle_fixtures()
-        for fixture in fixtures:
+    fixtures = [env.get_end_fixture()] + env.get_obstacle_fixtures()
+    for fixture in fixtures:
+        if randomize_placement:
             place_randomly(fixture, occupancy_map.buffered_meters(1.0))
-            occupancy_map = merge_occupancy_maps([occupancy_map, fixture.get_occupancy_map()])
-    else:
-        fixtures = [env.get_end_fixture()] + env.get_obstacle_fixtures()
-        for fixture in fixtures:
-            occupancy_map = merge_occupancy_maps([occupancy_map, fixture.get_occupancy_map()])
+            # Sync each placement so subsequent fixtures see the updated poses
+            # and so the write is not reverted by the next env.step.
+            _sync_simulation_state(env)
+        occupancy_map = merge_occupancy_maps([occupancy_map, fixture.get_occupancy_map()])
 
     # Compute goal poses from initial state (for policy's base_goal; robot/object already set by reset_to).
     initial_state = env.load_input_data(input_episode_data, 0)
@@ -282,6 +294,13 @@ def setup_navigation_scene(
         relative_pose=transform_mul(transform_inv(initial_state.fixture_pose), initial_state.base_pose),
         parent=env.get_end_fixture(),
     )
+
+    # Flush physics + render so the camera image and scene buffers reflect the
+    # randomized fixture poses before the policy's first inference.
+    if randomize_placement:
+        _sync_simulation_state(env)
+        env.sim.render()
+        env.obs_buf = env.observation_manager.compute(update_history=True)
 
     return None, base_goal
 
@@ -372,9 +391,8 @@ def eval_policy(
         randomize_placement: Whether to randomize fixture placement.
         policy_quat_format: Quaternion format expected by the policy ("xyzw" or "wxyz").
     """
-    initial_state = input_episode_data.get_initial_state()
     obs, _ = env.reset_to(
-        state=initial_state,
+        state=_clone_state(input_episode_data.get_initial_state()),
         env_ids=torch.tensor([0], device=env.device),
         is_relative=False,
     )
@@ -411,12 +429,23 @@ def eval_policy(
 
             action[28:31] = action[28:31] * 1.0
             _, _, reset_terminated, reset_time_outs, _ = env.step(action.unsqueeze(0))
-            if reset_terminated.any():
-                print("Reset terminated")
+            if reset_terminated.any() or reset_time_outs.any():
+                print("Episode ended, resetting rollout state")
+                env.reset_to(
+                    state=_clone_state(input_episode_data.get_initial_state()),
+                    env_ids=torch.tensor([0], device=env.device),
+                    is_relative=False,
+                )
+                occupancy_map, base_goal = setup_navigation_scene(
+                    env,
+                    input_episode_data,
+                    approach_distance=0.5,
+                    randomize_placement=randomize_placement,
+                )
+                policy.policy.reset()
                 step = 0
                 action_idx = 0
-            if reset_time_outs.any():
-                print("Reset timeouts")
+                continue
 
         step += 1
         action_idx += 1

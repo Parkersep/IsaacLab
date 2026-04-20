@@ -1,0 +1,97 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# Thin layer on top of NVIDIA's pre-built Isaac Lab 3.0 container for headless
+# data generation on cloud GPU hosts (vast.ai, RunPod, Lambda). Overlays the
+# develop-branch source tree on top of the stock /workspace/IsaacLab install
+# so the G1 locomanipulation SDG env and generate_data.py script are available.
+#
+# Build (no prior local image required — the base is pulled from NGC):
+#   docker build -t par4ker/isaaclab3-datagen:develop \
+#       -f docker/Dockerfile.datagen .
+#
+# Push to Docker Hub (public by default, so vast.ai can pull anonymously):
+#   docker login
+#   docker push par4ker/isaaclab3-datagen:develop
+
+ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab
+ARG BASE_TAG=3.0.0-beta1
+FROM ${BASE_IMAGE}:${BASE_TAG}
+
+SHELL ["/bin/bash", "-c"]
+
+LABEL description="Isaac Lab 3 develop branch overlaid on isaac-lab:3.0.0-beta1 for headless data generation."
+
+# git-lfs is required for HF dataset pushes that include MP4 videos.
+# openssh-client + rsync are handy for pulling VR teleop HDF5s from a workstation.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git-lfs openssh-client rsync && \
+    git lfs install --system && \
+    apt-get autoremove -y && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Overlay the develop-branch source on top of the pre-built 3.0.0-beta1 tree.
+# The NGC image ships Isaac Lab at /workspace/IsaacLab with two runtime pieces
+# installed alongside the source tree: the _isaac_sim symlink to /isaac-sim,
+# and a uv-managed env_isaaclab venv. Preserve both before wiping the source
+# so isaaclab.sh still finds a Python interpreter after the overlay.
+RUN mkdir -p /tmp/ngc-runtime && \
+    if [ -e /workspace/IsaacLab/_isaac_sim ]; then \
+        mv /workspace/IsaacLab/_isaac_sim /tmp/ngc-runtime/; \
+    fi && \
+    if [ -d /workspace/IsaacLab/env_isaaclab ]; then \
+        mv /workspace/IsaacLab/env_isaaclab /tmp/ngc-runtime/; \
+    fi && \
+    rm -rf /workspace/IsaacLab
+
+COPY . /workspace/IsaacLab
+WORKDIR /workspace/IsaacLab
+
+# Restore the runtime bits. If the base image didn't ship an _isaac_sim
+# symlink (shape varies across NGC tags), fall back to a direct symlink to
+# /isaac-sim which is the canonical install path in the NVIDIA base.
+RUN if [ -e /tmp/ngc-runtime/_isaac_sim ]; then \
+        mv /tmp/ngc-runtime/_isaac_sim /workspace/IsaacLab/_isaac_sim; \
+    elif [ -d /isaac-sim ]; then \
+        ln -s /isaac-sim /workspace/IsaacLab/_isaac_sim; \
+    fi && \
+    if [ -d /tmp/ngc-runtime/env_isaaclab ]; then \
+        mv /tmp/ngc-runtime/env_isaaclab /workspace/IsaacLab/env_isaaclab; \
+    fi && \
+    rm -rf /tmp/ngc-runtime
+
+# Reinstall extensions in-place so the develop-branch code is picked up by
+# the Python interpreter that the NGC base already configured.
+RUN ./isaaclab.sh --install
+
+# HuggingFace CLI (provides the unified `hf` command; 0.34+ required — the
+# legacy `huggingface-cli` entry point was deprecated in favor of `hf`).
+# Upper-bounded <1.0: huggingface_hub 1.x breaks transformers <5 (the
+# finetune stack pins `huggingface-hub<1.0` via transformers 4.x).
+#
+# The Isaac Sim bundled Python's bin/ isn't on $PATH, so symlink the CLI
+# entry points into /usr/local/bin. That way `hf` / `huggingface-cli` just
+# work from any shell (including the vast.ai default SSH session) without
+# needing to activate a venv or invoke via `isaaclab.sh -p -m`.
+RUN ./isaaclab.sh -p -m pip install --no-cache-dir \
+        "huggingface_hub[cli]>=0.34,<1.0" && \
+    printf '#!/bin/bash\nexec /workspace/IsaacLab/_isaac_sim/python.sh -m huggingface_hub.cli.hf "$@"\n' \
+        > /usr/local/bin/hf && chmod +x /usr/local/bin/hf && \
+    printf '#!/bin/bash\nexec /workspace/IsaacLab/_isaac_sim/python.sh -m huggingface_hub.commands.huggingface_cli "$@"\n' \
+        > /usr/local/bin/huggingface-cli && chmod +x /usr/local/bin/huggingface-cli
+
+# Default environment: single-threaded BLAS (required for Step 3 Mimic
+# generation to avoid the atfork() crash in blas_thread_shutdown_), and force
+# the pure-Python protobuf backend so replicator doesn't complain about
+# duplicate health.proto registrations.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+
+# Canonical dataset mount point. Mount a vast.ai volume here at runtime:
+#   -v /workspace/datasets:/workspace/datasets
+RUN mkdir -p /workspace/datasets
+VOLUME ["/workspace/datasets"]
