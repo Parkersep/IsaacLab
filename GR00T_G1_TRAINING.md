@@ -4,7 +4,7 @@ End-to-end walkthrough: from the teleop recording you already captured in `QUEST
 
 **Assumes you have:**
 - Working teleop session producing `./datasets/dataset_g1_locomanip.hdf5` (see [`QUEST_TELEOP_SETUP.md`](./QUEST_TELEOP_SETUP.md))
-- GR00T **N1.6** already cloned and installed in a Python env (details in Step 6)
+- GR00T **N1.7** already cloned and installed in a Python env (details in Step 6)
 - This repo (`IsaacLab3`) with the `env_isaaclab` venv activated
 
 ## Pipeline at a glance
@@ -88,8 +88,21 @@ Already covered in [`QUEST_TELEOP_SETUP.md`](./QUEST_TELEOP_SETUP.md) → "Recor
     --num_demos 5
 ```
 
+**OpenArm bimanual variant** (uses the local OpenArm USD, DifferentialIK per arm, and Quest triggers for 1-DOF grippers):
+
+```bash
+./isaaclab.sh -p scripts/tools/record_demos.py \
+    --device cpu \
+    --xr \
+    --visualizer kit \
+    --task Isaac-PickPlace-OpenArm-Bimanual-Abs-v0 \
+    --dataset_file ./datasets/dataset_openarm_bimanual.hdf5 \
+    --num_demos 5
+```
+
 Reminders:
-- **Use the Quest Touch controllers**, not optical hand tracking — the G1 locomanip retargeting pipeline is hardcoded for controllers.
+- **Use the Quest Touch controllers**, not optical hand tracking — both retargeting pipelines are controller-only.
+- On the OpenArm task, the trigger on each controller drives the gripper on that side (pull = close, release = open).
 - Collect at least 5 good demos; more is better. Quality > quantity.
 
 ### Step 1b (optional): Push recorded demos to HuggingFace Hub
@@ -221,7 +234,7 @@ This is the step that converts state-only Mimic output into a visuomotor dataset
     --output_file ./datasets/generated_dataset_g1_locomanipulation_sdg.hdf5 \
     --enable_cameras \
     --randomize_placement \
-    --visualizer kit 
+    --visualizer kit
 ```
 
 **Run: Remote (vast.ai datagen instance)**
@@ -279,7 +292,7 @@ Creates `./datasets/plots/nav_trajectories/demo_<n>.png` for every episode in th
 
 ## Step 5: Convert to LeRobot format
 
-GR00T N1.5/N1.6 both expect data in LeRobot (GNx) format. The converter takes a **directory** of HDF5 files (not a single file) so you can batch multiple runs together.
+GR00T N1.5/N1.6/N1.7 all expect data in LeRobot (GNx) format. The converter takes a **directory** of HDF5 files (not a single file) so you can batch multiple runs together.
 
 **Run: Local**
 ```bash
@@ -366,7 +379,7 @@ hf download \
 hf download \
     --repo-type dataset \
     SensoriRobotics/g1_locomanipulation_sdg \
-    --include "run2/**" \
+    --include "run3/**" \
     --local-dir /workspace/datasets/g1_locomanipulation_sdg
 
 # multiple runs in one pull — pass several patterns to --include separated by
@@ -383,29 +396,31 @@ Files land under `/workspace/datasets/g1_locomanipulation_sdg/run2/...` since HF
 
 See also: `/home/parker/VLA_MODEL/Groot_projects/Isaac-GR00T/Notes/cloud_training_vastai.md` for the full vast.ai deployment workflow that wraps around this.
 
-## Step 6: Wire up GR00T N1.6
+## Step 6: Wire up GR00T N1.7
 
-You said you already have Isaac-GR00T cloned and installed. The **one critical step** is copying this repo's data config into the GR00T tree:
+You said you already have Isaac-GR00T cloned and installed. The **one critical step** is importing this repo's data config so it registers the embodiment's modality config in `MODALITY_CONFIGS`. In N1.7 the registration happens at import time via `register_modality_config`, so you just need the module on the Python path (e.g. drop it into `examples/G1-SDG/g1_sdg_config.py` as shown in Step 7a):
 
 ```bash
 # adjust paths to match where your Isaac-GR00T clone lives
+mkdir -p /path/to/Isaac-GR00T/examples/G1-SDG
 cp /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sdg/gr00t/data_config.py \
-   /path/to/Isaac-GR00T/gr00t/experiment/data_config.py
+   /path/to/Isaac-GR00T/examples/G1-SDG/g1_sdg_config.py
 ```
 
-This overwrites GR00T's stock `data_config.py` with one that defines `G1LocomanipulationSDGDataConfig` and registers it in `DATA_CONFIG_MAP` under the key `"g1_locomanipulation_sdg"`. Both the finetune script and Isaac Lab's rollout script look up this key.
+Importing this module calls `register_modality_config(..., embodiment_tag=EmbodimentTag.NEW_EMBODIMENT)`, which inserts the SDG config into `gr00t.configs.data.embodiment_configs.MODALITY_CONFIGS` under the tag's string value. Both the finetune script (via `--modality_config_path`) and Isaac Lab's rollout script rely on this registration.
 
-### N1.5 vs N1.6 caveat
+### N1.5/N1.6 → N1.7 migration notes
 
-The Isaac Lab docs were written for **N1.5** (`git clone -b n1.5-release ...`). Since you're on **N1.6**:
+The Isaac Lab docs were originally written for **N1.5** (`git clone -b n1.5-release ...`). This pipeline has since been updated to **N1.7** (`n1.7-release` tag). Key points if you hit import errors:
 
-- The data config is **probably still compatible** — it only depends on public `gr00t.data.*` and `gr00t.model.transforms.GR00TTransform` APIs. If any of those names moved or changed signatures in N1.6, you'll get a quick `ImportError` on first run of Step 7 or 8. Fix by updating the imports at the top of your copied `data_config.py`.
-- The finetune CLI (`scripts/gr00t_finetune.py`) may have added/renamed/removed args in N1.6. The command in Step 7 is the N1.5 shape — run `python scripts/gr00t_finetune.py --help` in your N1.6 clone first to verify.
-- The policy wrapper `Gr00tPolicy` (imported by `policy.py` in Step 8) may have a different constructor signature in N1.6. If the rollout script errors out on policy init, read the traceback and adjust `scripts/imitation_learning/locomanipulation_sdg/gr00t/policy.py` accordingly.
+- **`gr00t/experiment/data_config.py` is gone** (removed in N1.6). The equivalent N1.7 module is `gr00t/configs/data/data_config.py`, and registration uses `register_modality_config` from `gr00t.configs.data.embodiment_configs` — this repo's `data_config.py` already uses the new API.
+- **`DATA_CONFIG_MAP` and `load_data_config` are also gone.** Lookups now go through `MODALITY_CONFIGS[embodiment_tag.value]`.
+- **`launch_finetune.py` CLI flags** may have shifted between versions — run `python gr00t/experiment/launch_finetune.py --help` in your N1.7 clone first to verify.
+- **`Gr00tPolicy`** in N1.7 takes `embodiment_tag`, `model_path`, and a keyword-only `device=` (see `gr00t/policy/gr00t_policy.py`). This matches what `policy.py` in Step 8 already passes.
 
-These three files are the only N1.5↔N1.6 surface; everything else in this pipeline is inside Isaac Lab and is version-agnostic.
+These are the only files that touch GR00T's Python surface; everything else in this pipeline is inside Isaac Lab and is version-agnostic.
 
-## Step 7: Finetune GR00T N1.6
+## Step 7: Finetune GR00T N1.7
 
 From the `Isaac-GR00T` directory, using **your GR00T env** (not `env_isaaclab`):
 
@@ -422,7 +437,7 @@ scp /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sd
 
 ### Step 7b: Launch finetuning
 
-The N1.6 `launch_finetune.py` takes a **single** `--dataset_path` pointing at one LeRobot dataset root (the dir with `meta/info.json`). Pick the variant below that matches your data layout.
+The N1.7 `launch_finetune.py` takes a **single** `--dataset_path` pointing at one LeRobot dataset root (the dir with `meta/info.json`). Pick the variant below that matches your data layout.
 
 **Single run** — point `--dataset_path` at one LeRobot root:
 
@@ -430,8 +445,8 @@ The N1.6 `launch_finetune.py` takes a **single** `--dataset_path` pointing at on
 cd /workspace/gr00t
 
 python gr00t/experiment/launch_finetune.py \
-    --base_model_path nvidia/GR00T-N1.6-3B \
-    --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run2 \
+    --base_model_path nvidia/GR00T-N1.7-3B \
+    --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run3 \
     --embodiment_tag NEW_EMBODIMENT \
     --modality_config_path examples/G1-SDG/g1_sdg_config.py \
     --output_dir /tmp/g1_finetune \
@@ -448,7 +463,7 @@ python gr00t/experiment/launch_finetune.py \
     --use_wandb
 ```
 
-**Multiple runs** — use the `launch_finetune_multirun.py` wrapper in this repo, which adds `--extra_dataset_paths` on top of the stock N1.6 CLI. All paths become one `SingleDatasetConfig` and are concatenated proportionally by episode count.
+**Multiple runs** — use the `launch_finetune_multirun.py` wrapper in this repo, which adds `--extra_dataset_paths` on top of the stock N1.7 CLI. All paths become one `SingleDatasetConfig` and are concatenated proportionally by episode count.
 
 Copy the wrapper to the remote (from your local machine):
 
@@ -461,7 +476,7 @@ Then on the remote, from `/workspace/gr00t`:
 
 ```bash
 python launch_finetune_multirun.py \
-    --base_model_path nvidia/GR00T-N1.6-3B \
+    --base_model_path nvidia/GR00T-N1.7-3B \
     --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run2 \
     --extra_dataset_paths /workspace/datasets/g1_locomanipulation_sdg/run3 \
     --embodiment_tag NEW_EMBODIMENT \
@@ -482,7 +497,7 @@ python launch_finetune_multirun.py \
 
 `--extra_dataset_paths` accepts any number of paths (e.g. `... run3 run4 run5`), so you can keep adding runs without touching the wrapper.
 
-Confirm each flag with `--help` first if you're unsure whether N1.6 renamed any.
+Confirm each flag with `--help` first if you're unsure whether N1.7 renamed any.
 
 Monitor with:
 ```bash
@@ -518,10 +533,11 @@ Then run:
 ```bash
 cd /home/parker/Nvidia/IsaacLab3
 
+
 ./isaaclab.sh -p scripts/imitation_learning/locomanipulation_sdg/gr00t/rollout_policy.py \
-    --model_path /path/to/Isaac-GR00T/checkpoints/g1_locomanip/checkpoint-4000 \
+    --model_path /home/parker/VLA_MODEL/Groot_projects/Isaac-GR00T/checkpoints/run1_n1.7/g1_finetune/checkpoint-40000 \
     --embodiment_tag new_embodiment \
-    --dataset /home/parker/Nvidia/IsaacLab3/datasets/sdg_input/generated_dataset_g1_locomanipulation_sdg.hdf5 \
+    --dataset /home/parker/Nvidia/IsaacLab3/datasets/run2/vla/vla_2_dataset_g1_locomanipulation_sdg.hdf5 \
     --demo demo_0 \
     --output_file ./datasets/rollout_output.hdf5 \
     --task Isaac-G1-SteeringWheel-Locomanipulation \
@@ -529,7 +545,9 @@ cd /home/parker/Nvidia/IsaacLab3
     --enable_cameras \
     --visualizer kit \
     --randomize_placement \
-    --policy_quat_format wxyz
+    --policy_quat_format wxyz \
+    --task_description "Pick up and drop off the object" \
+    --inference_interval 4
 ```
 
 > **`--randomize_placement` is required for checkpoints trained with fixture randomization.** Without it, `setup_navigation_scene` skips `place_randomly`, so the drop-off bench stays at its config-default pose (`[-2, -3.55, -0.3]`, −45° yaw) across all resets — which is out-of-distribution for a policy trained on random bench placements and usually produces wrong-direction navigation.
@@ -545,7 +563,7 @@ Options worth knowing:
 
 | Problem | Likely cause / fix |
 |---|---|
-| `ImportError` loading `gr00t.*` during Step 7/8 | N1.6 moved/renamed something. Check your copied `data_config.py` imports and `policy.py` against N1.6's current API. |
+| `ImportError` loading `gr00t.*` during Step 7/8 | N1.7 moved/renamed something. Check your copied `data_config.py` imports and `policy.py` against N1.7's current API (`gr00t.configs.data.embodiment_configs`, `gr00t.policy.gr00t_policy`). |
 | `convert_dataset.py` skips all episodes | Check `get_total_object_displacement` — episodes with tiny xy movement are filtered. Inspect your source HDF5's `locomanipulation_sdg_output_data/object_pose`. |
 | No `video.ego_view` key in LeRobot output | Step 4 was run without `--enable_cameras`. Re-run Step 4. |
 | Rollout can't find `policy` module | Run from IsaacLab root using `./isaaclab.sh -p` — the script's own dir is added to `sys.path` automatically. |
@@ -603,5 +621,5 @@ Image size is ~30 GB (Isaac Sim base is ~20 GB on its own); first pull on vast.a
 ## References
 
 - Updated develop docs: https://isaac-sim.github.io/IsaacLab/develop/source/overview/imitation-learning/mimic_humanoid_demos.html
-- Isaac-GR00T (N1.6 branch): use whichever branch/tag you installed
+- Isaac-GR00T (N1.7 release): `git checkout n1.7-release` or pin the `23ace64` commit — see `source/isaaclab_contrib/setup.py` for the exact SHA this repo is tested against
 - LeRobot (GNx) format spec: https://github.com/huggingface/lerobot

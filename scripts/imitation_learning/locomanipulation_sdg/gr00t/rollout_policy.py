@@ -30,6 +30,22 @@ parser.add_argument(
     help="Quaternion order the policy uses: 'xyzw' (current Isaac Lab) or 'wxyz' (legacy). "
     "Converts env observations/actions to match. Default is 'xyzw'.",
 )
+parser.add_argument(
+    "--task_description",
+    type=str,
+    default="Pick up the steering wheel and place it on the bench",
+    help="Language instruction passed to the VLA. Should match one of the TASK_TEMPLATES in "
+    "convert_dataset.py. For checkpoints trained on the old single-string label, pass "
+    "'Pick up and drop off the object'.",
+)
+parser.add_argument(
+    "--inference_interval",
+    type=int,
+    default=16,
+    help="Number of env steps between policy inferences. Must be <= action horizon "
+    "(16 for the default config). Smaller values re-plan more often and reduce compounding "
+    "drift at the cost of compute.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -282,7 +298,7 @@ def setup_navigation_scene(
     fixtures = [env.get_end_fixture()] + env.get_obstacle_fixtures()
     for fixture in fixtures:
         if randomize_placement:
-            place_randomly(fixture, occupancy_map.buffered_meters(1.0))
+            place_randomly(fixture, occupancy_map.buffered_meters(0.7), num_iter=5000)
             # Sync each placement so subsequent fixtures see the updated poses
             # and so the write is not reverted by the next env.step.
             _sync_simulation_state(env)
@@ -305,7 +321,12 @@ def setup_navigation_scene(
     return None, base_goal
 
 
-def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, policy_quat_format: str = "xyzw"):
+def build_model_input(
+    env: LocomanipulationSDGEnv,
+    base_goal: RelativePose,
+    policy_quat_format: str = "xyzw",
+    task_description: str = "Pick up the steering wheel and place it on the bench",
+):
     """Build GR00T model input dict and dummy action from current env state.
 
     Poses are expressed relative to the robot base. State pose quats are converted
@@ -315,6 +336,8 @@ def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, poli
         env: The locomanipulation SDG environment.
         base_goal: Goal pose (e.g. from setup_navigation_scene).
         policy_quat_format: "xyzw" or "wxyz" for state pose quaternions.
+        task_description: Language instruction for the VLA. Must match one of the
+            TASK_TEMPLATES in convert_dataset.py used to train the checkpoint.
 
     Returns:
         Tuple of (model_input dict, dummy_action tensor) for the policy.
@@ -357,7 +380,7 @@ def build_model_input(env: LocomanipulationSDGEnv, base_goal: RelativePose, poli
     video = obs["policy"]["robot_pov_cam"]  # (B, H, W, C) torch uint8
     model_input = {
         "video.ego_view": video.unsqueeze(1).cpu().numpy().astype(np.uint8),
-        "annotation.human.action.task_description": ("Pick up and drop off the object",),  # language instruction (B,)
+        "annotation.human.action.task_description": (task_description,),  # language instruction (B,)
     }
     for key, val in state_tensors.items():
         model_input[key] = val.unsqueeze(1).cpu().numpy().astype(np.float32)
@@ -377,6 +400,8 @@ def eval_policy(
     input_episode_data: EpisodeData,
     randomize_placement: bool = True,
     policy_quat_format: str = "xyzw",
+    task_description: str = "Pick up the steering wheel and place it on the bench",
+    inference_interval: int = 16,
 ) -> None:
     """Run policy rollout in the environment with state machine and recording-based initial state.
 
@@ -402,11 +427,10 @@ def eval_policy(
 
     step = 0
     action_idx = 0
-    inference_interval = 16
 
     while simulation_app.is_running() and not simulation_app.is_exiting():
         if step % inference_interval == 0:
-            model_input, dummy_action = build_model_input(env, base_goal, policy_quat_format)
+            model_input, dummy_action = build_model_input(env, base_goal, policy_quat_format, task_description)
             action_dict, _ = policy.policy.get_action(model_input)
             # action_dict values are np.float32 (B, T, D) — take first batch, convert to torch
             action_buffer = torch.cat([torch.from_numpy(v[0]) for v in action_dict.values()], dim=-1)
@@ -480,6 +504,8 @@ if __name__ == "__main__":
             input_episode_data=input_episode_data,
             randomize_placement=args_cli.randomize_placement,
             policy_quat_format=args_cli.policy_quat_format,
+            task_description=args_cli.task_description,
+            inference_interval=args_cli.inference_interval,
         )
 
         env.reset()

@@ -235,7 +235,26 @@ if __name__ == "__main__":
     episodes_data = []
 
     fps = 20.0
-    task_description = "Pick up and drop off the object"
+
+    # Language task descriptions assigned round-robin across episodes so the
+    # VLA sees varied phrasings for the same skill. With a single hardcoded
+    # string the model learns "any language → this one skill" and ignores
+    # the prompt at inference; varied templates force the backbone to ground
+    # on semantically meaningful tokens like "steering wheel" and "bench".
+    # Keep object/destination names matching the actual SDG scene.
+    OBJECT_NAME = "steering wheel"
+    DESTINATION = "bench"
+    TASK_TEMPLATES = [
+        f"Pick up the {OBJECT_NAME} and place it on the {DESTINATION}",
+        f"Grasp the {OBJECT_NAME} and set it on the {DESTINATION}",
+        f"Lift the {OBJECT_NAME} and put it on the {DESTINATION}",
+        f"Retrieve the {OBJECT_NAME} and deliver it to the {DESTINATION}",
+        f"Walk to the {OBJECT_NAME}, pick it up, and drop it off on the {DESTINATION}",
+        f"Move the {OBJECT_NAME} onto the {DESTINATION}",
+        f"Grab the {OBJECT_NAME} and place it at the drop-off location",
+        f"Pick up the {OBJECT_NAME} and transport it to the {DESTINATION}",
+    ]
+    VALIDITY_INDEX = len(TASK_TEMPLATES)
 
     for dataset_path in dataset_paths:
         dataset = h5py.File(dataset_path, "r")
@@ -285,13 +304,16 @@ if __name__ == "__main__":
             state_concat = np.concatenate([v for v in state.values()], axis=-1)
             action_concat = np.concatenate([v for v in action.values()], axis=-1)
 
+            task_idx = total_episodes % len(TASK_TEMPLATES)
+            episode_task_description = TASK_TEMPLATES[task_idx]
+
             parquet_data = {
                 "observation.state": state_concat.tolist(),
                 "action": action_concat.tolist(),
                 "timestamp": timestamps.tolist(),
-                "annotation.human.action.task_description": [0] * episode_duration,
-                "task_index": [0] * episode_duration,
-                "annotation.human.validity": [1] * episode_duration,
+                "annotation.human.action.task_description": [task_idx] * episode_duration,
+                "task_index": [task_idx] * episode_duration,
+                "annotation.human.validity": [VALIDITY_INDEX] * episode_duration,
                 "episode_index": [total_episodes] * episode_duration,
                 "index": list(range(total_frames, total_frames + episode_duration)),
             }
@@ -312,7 +334,7 @@ if __name__ == "__main__":
             episodes_data.append(
                 {
                     "episode_index": total_episodes,
-                    "tasks": [task_description, "valid"],  # Task description and validity
+                    "tasks": [episode_task_description, "valid"],
                     "length": episode_duration,
                 }
             )
@@ -339,7 +361,8 @@ if __name__ == "__main__":
         for episode in episodes_data:
             f.write(json.dumps(episode) + "\n")
 
-    tasks_data = [{"task_index": 0, "task": task_description}, {"task_index": 1, "task": "valid"}]
+    tasks_data = [{"task_index": i, "task": template} for i, template in enumerate(TASK_TEMPLATES)]
+    tasks_data.append({"task_index": VALIDITY_INDEX, "task": "valid"})
     with open(os.path.join(output_path, "meta", "tasks.jsonl"), "w") as f:
         for task in tasks_data:
             f.write(json.dumps(task) + "\n")

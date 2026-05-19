@@ -195,12 +195,29 @@ def _patch_gr00t_get_model(cfg: dict) -> None:
 
         Returns:
             The loaded GR00T model instance.
+
+        Note:
+            N1.5/N1.6 → N1.7 migration. The legacy ``gr00t.experiment.data_config``
+            module and ``load_data_config`` helper were removed in N1.6. N1.7 stores
+            modality configs in ``gr00t.configs.data.embodiment_configs.MODALITY_CONFIGS``
+            keyed by the embodiment tag's string value; data transforms now live inside
+            the pretrained ``AutoProcessor`` rather than on a ``BaseDataConfig`` object.
+
+            This function still imports ``GR00T_N1_5_ForRLActionPrediction`` from
+            rlinf — that class was written against the N1.5-era API (separate
+            ``modality_transform`` kwarg). Running this code end-to-end on N1.7
+            requires an rlinf release that either (a) renames the class for N1.7
+            and drops ``modality_transform``, or (b) accepts a processor in its
+            place. Until that lands, ``data_config_class`` must correspond to an
+            embodiment whose modality config has been registered via
+            ``register_modality_config(..., embodiment_tag=<tag>)`` (see
+            ``scripts/imitation_learning/locomanipulation_sdg/gr00t/data_config.py``).
         """
         if torch_dtype is None:
             torch_dtype = torch.bfloat16
 
         # Handle custom embodiment (we only get here if tag was not natively supported)
-        from gr00t.experiment.data_config import load_data_config
+        from gr00t.configs.data.embodiment_configs import MODALITY_CONFIGS
         from rlinf.models.embodiment.gr00t.gr00t_action_model import GR00T_N1_5_ForRLActionPrediction
         from rlinf.models.embodiment.gr00t.utils import replace_dropout_with_identity
         from rlinf.utils.patcher import Patcher
@@ -217,9 +234,42 @@ def _patch_gr00t_get_model(cfg: dict) -> None:
         )
         Patcher.apply()
 
-        data_config = load_data_config(data_config_class)
-        modality_config = data_config.modality_config()
-        modality_transform = data_config.transform()
+        # ``data_config_class`` is kept as an opaque string for backwards
+        # compatibility with the YAML schema. In N1.7 it is interpreted as the
+        # importable module path that registers the embodiment's modality config
+        # via ``register_modality_config`` at import time. The actual lookup key
+        # for ``MODALITY_CONFIGS`` is the embodiment tag's string value.
+        if data_config_class:
+            import importlib
+
+            try:
+                importlib.import_module(data_config_class)
+            except ModuleNotFoundError:
+                # Not every ``data_config_class`` value maps to an importable module
+                # (older configs used registry keys like ``"g1_locomanipulation_sdg"``).
+                # Registration may already have happened elsewhere in the process.
+                logger.debug(
+                    f"data_config_class='{data_config_class}' is not an importable "
+                    "module; assuming modality config is already registered."
+                )
+
+        tag_key = (
+            model_cfg.embodiment_tag.value
+            if hasattr(model_cfg.embodiment_tag, "value")
+            else str(model_cfg.embodiment_tag)
+        )
+        if tag_key not in MODALITY_CONFIGS:
+            raise KeyError(
+                f"No modality config registered for embodiment tag '{tag_key}'. "
+                "Import the module that calls register_modality_config(...) for "
+                "this tag before loading the model (e.g. your data_config.py)."
+            )
+        modality_config = MODALITY_CONFIGS[tag_key]
+        # N1.7 no longer exposes a standalone modality_transform; the processor
+        # carries transforms. rlinf's N1.5-era class still expects this kwarg,
+        # so pass None and let rlinf fall back to its built-in transforms. If
+        # rlinf ships an N1.7-compatible class, revisit this line.
+        modality_transform = None
 
         model_path = Path(model_cfg.model_path)
         if not model_path.exists():

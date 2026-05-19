@@ -1,6 +1,19 @@
 Changelog
 ---------
 
+1.5.17 (2026-05-18)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``Isaac-PickPlace-OpenArm-Bimanual-Abs-v0``, a fixed-base bimanual
+  OpenArm teleop task that swaps in a local OpenArm bimanual USD, drives
+  each arm with :class:`~isaaclab.envs.mdp.actions.DifferentialInverseKinematicsAction`,
+  and maps the Meta Quest 3 controller triggers to a 1-DOF binary gripper
+  command via :class:`~isaacteleop.retargeters.GripperRetargeter`.
+
+
 1.5.16 (2026-03-24)
 ~~~~~~~~~~~~~~~~~~~
 

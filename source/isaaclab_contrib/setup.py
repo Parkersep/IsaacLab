@@ -20,7 +20,7 @@ EXTRAS_REQUIRE = {
     "rlinf": [
         # GR00T (Isaac-GR00T) must be installed separately:
         #   git clone https://github.com/NVIDIA/Isaac-GR00T.git
-        #   git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+        #   git checkout n1.7-release  # or SHA 23ace64f17aa5015259b8609d371eb61a357c776
         #   pip install -e Isaac-GR00T/.[base] --no-deps
         #   pip install --no-build-isolation flash-attn==2.7.1.post4
         "rlinf==0.2.0dev2",

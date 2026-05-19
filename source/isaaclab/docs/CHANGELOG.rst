@@ -1,6 +1,21 @@
 Changelog
 ---------
 
+4.5.25 (2026-05-18)
+~~~~~~~~~~~~~~~~~~~
+
+Fixed
+^^^^^
+
+* Fixed :class:`~isaaclab.envs.mdp.actions.PinkInverseKinematicsAction` mis-slicing the
+  hand-joint window when ``controller.num_hand_joints == 0``. Previously
+  ``actions[:, -0:]`` returned the entire action tensor (Python ``-0 == 0``),
+  causing :meth:`apply_actions` to send a doubled-up target to
+  :meth:`~isaaclab.assets.Articulation.set_joint_position_target_index` and raise a
+  shape-mismatch error. The slice now uses an explicit empty window when
+  ``num_hand_joints == 0``.
+
+
 4.5.24 (2026-03-25)
 ~~~~~~~~~~~~~~~~~~~
 

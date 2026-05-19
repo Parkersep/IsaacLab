@@ -197,8 +197,14 @@ class PinkInverseKinematicsAction(ActionTerm):
         # Store raw actions
         self._raw_actions[:] = actions
 
-        # Extract hand joint positions directly (no cloning needed)
-        self._target_hand_joint_positions = actions[:, -self.hand_joint_dim :]
+        # Extract hand joint positions directly (no cloning needed).
+        # When ``hand_joint_dim == 0``, ``actions[:, -0:]`` collapses to the
+        # full tensor (Python ``-0 == 0``); slice an empty trailing window
+        # instead so ``apply_actions`` cats a (num_envs, 0) tensor.
+        if self.hand_joint_dim > 0:
+            self._target_hand_joint_positions = actions[:, -self.hand_joint_dim :]
+        else:
+            self._target_hand_joint_positions = actions[:, 0:0]
 
         # Get base link frame transformation
         self.base_link_frame_in_world_rf = self._get_base_link_frame_transform()

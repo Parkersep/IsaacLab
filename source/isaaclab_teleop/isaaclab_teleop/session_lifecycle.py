@@ -338,9 +338,7 @@ class TeleopSessionLifecycle:
             return False
 
         if oxr_handles is None:
-            logger.info(
-                "Kit XR bridge not available; IsaacTeleop will create its own OpenXR session (standalone mode)"
-            )
+            logger.info("Kit XR bridge not available; IsaacTeleop will create its own OpenXR session (standalone mode)")
 
         session_config = TeleopSessionConfig(
             app_name=self._cfg.app_name,
@@ -360,9 +358,7 @@ class TeleopSessionLifecycle:
             session.__enter__()
         except RuntimeError as e:
             if not self._session_start_deferred_logged:
-                logger.info(
-                    f"IsaacTeleop session creation deferred (no XR device connected yet): {e}"
-                )
+                logger.info(f"IsaacTeleop session creation deferred (no XR device connected yet): {e}")
                 self._session_start_deferred_logged = True
             return False
 
@@ -434,9 +430,9 @@ class TeleopSessionLifecycle:
             result = self._session.step(external_inputs=external_inputs)
         except Exception as e:
             import traceback
+
             logger.warning(
-                f"IsaacTeleop session step failed (XR session likely torn down): {e}\n"
-                f"{traceback.format_exc()}"
+                f"IsaacTeleop session step failed (XR session likely torn down): {e}\n{traceback.format_exc()}"
             )
             self._teardown_dead_session()
             return None
@@ -648,8 +644,7 @@ class TeleopSessionLifecycle:
             proc_addr = openxr.get_instance_proc_addr()
         except AttributeError as e:
             logger.info(
-                f"omni.kit.xr.system.openxr missing expected API ({e}); "
-                "IsaacTeleop will create its own OpenXR session"
+                f"omni.kit.xr.system.openxr missing expected API ({e}); IsaacTeleop will create its own OpenXR session"
             )
             return None
 

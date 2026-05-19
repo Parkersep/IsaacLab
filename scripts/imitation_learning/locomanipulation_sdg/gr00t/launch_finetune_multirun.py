@@ -5,7 +5,7 @@
 #
 # Multi-dataset variant of gr00t/experiment/launch_finetune.py.
 #
-# GR00T N1.6's launch_finetune.py only exposes --dataset_path (single str), but
+# GR00T N1.7's launch_finetune.py only exposes --dataset_path (single str), but
 # the underlying SingleDatasetConfig.dataset_paths field accepts a list. This
 # wrapper adds --extra_dataset_paths PATH [PATH ...] so multiple LeRobot
 # dataset roots (e.g. run2/ and run3/) can be merged into one training run.
@@ -14,7 +14,7 @@
 #
 # Usage (on the remote, from /workspace/gr00t):
 #   python launch_finetune_multirun.py \
-#       --base_model_path nvidia/GR00T-N1.6-3B \
+#       --base_model_path nvidia/GR00T-N1.7-3B \
 #       --dataset_path /workspace/datasets/g1_locomanipulation_sdg/run2 \
 #       --extra_dataset_paths /workspace/datasets/g1_locomanipulation_sdg/run3 \
 #       --embodiment_tag NEW_EMBODIMENT \
@@ -27,7 +27,6 @@ import sys
 from pathlib import Path
 
 import tyro
-
 from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.experiment.experiment import run
@@ -124,7 +123,7 @@ if __name__ == "__main__":
     config.training.max_steps = ft_config.max_steps
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
-    config.training.wandb_project = "finetune-gr00t-n1d6"
+    config.training.wandb_project = "finetune-gr00t-n1d7"
 
     config.data.shard_size = ft_config.shard_size
     config.data.episode_sampling_rate = ft_config.episode_sampling_rate
