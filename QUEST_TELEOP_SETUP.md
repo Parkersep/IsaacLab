@@ -108,6 +108,17 @@ Wait for Isaac Sim to fully load and show "Teleoperation started."
     --task Isaac-PickPlace-GR1T2-Abs-v0 \
     --teleop_device handtracking \
     --visualizer kit --xr
+
+# OpenArm bimanual fixed-base pick-place (Quest controllers, Pink IK, tuned RPY offsets)
+./isaaclab.sh -p scripts/environments/teleoperation/teleop_se3_agent.py \
+    --task Isaac-PickPlace-OpenArm-Bimanual-Abs-v0 \
+    --visualizer kit --xr
+
+# OpenArm bimanual sandbox — drive the wheeled base with joysticks while teleop-ing the arms
+# Left stick = forward/back, right stick = yaw. Ground plane only, no objects.
+./isaaclab.sh -p scripts/environments/teleoperation/teleop_se3_agent.py \
+    --task Isaac-Sandbox-OpenArm-Bimanual-Wheeled-v0 \
+    --visualizer kit --xr
 ```
 
 ### Recording demonstrations

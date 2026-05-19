@@ -36,18 +36,25 @@ from isaaclab_tasks.manager_based.manipulation.pick_place import mdp as manip_md
 
 from isaaclab_assets.robots.openarm import OPENARM_BI_HIGH_PD_CFG
 
-# Local OpenArm bimanual assets (override the Nucleus defaults).
-# The ``_pink_ik`` sibling USD has the wheel joints and the 4 unactuated
-# hand/TCP revolute joints converted to fixed, so Pink IK's strict
-# USD<->URDF joint-list correspondence holds.
-OPENARM_BIMANUAL_LOCAL_USD = (
-    "/home/parker/VLA_MODEL/Openarm_projects/openarm_isaac_lab/source/openarm/openarm/tasks/"
-    "manager_based/openarm_manipulation/usds/openarm_bimanual/openarm_bimanual_pink_ik.usd"
+import os as _os
+
+# In-repo OpenArm bimanual assets (USDs + URDFs + meshes). All paths resolve
+# relative to this file so the repo can be cloned anywhere.
+# The ``_pink_ik`` USD has the wheel joints and the 4 unactuated hand/TCP
+# revolute joints converted to fixed, so Pink IK's strict USD<->URDF
+# joint-list correspondence holds.
+_OPENARM_ASSETS_DIR = _os.path.join(
+    _os.path.dirname(_os.path.abspath(__file__)), "assets", "openarm_bimanual"
 )
-OPENARM_BIMANUAL_LOCAL_URDF = "/home/parker/VLA_MODEL/Openarm_projects/openarm/openarm_bimanual.urdf"
+OPENARM_BIMANUAL_LOCAL_USD = _os.path.join(
+    _OPENARM_ASSETS_DIR, "usds", "openarm_bimanual_pink_ik.usd"
+)
+OPENARM_BIMANUAL_LOCAL_URDF = _os.path.join(
+    _OPENARM_ASSETS_DIR, "urdfs", "openarm_bimanual.urdf"
+)
 # Parent of ``openarm_description/`` so pinocchio resolves
 # ``package://openarm_description/...`` mesh references in the URDF.
-OPENARM_BIMANUAL_MESH_ROOT = "/home/parker/VLA_MODEL/Openarm_projects/openarm"
+OPENARM_BIMANUAL_MESH_ROOT = _OPENARM_ASSETS_DIR
 
 
 # Pink IK controller: one LocalFrameTask per wrist plus a null-space posture
@@ -63,7 +70,7 @@ OPENARM_BIMANUAL_IK_CONTROLLER_CFG = PinkIKControllerCfg(
             frame="openarm_left_hand",  # URDF link name
             base_link_frame_name="openarm_body_link0",  # URDF root of the bimanual chain
             position_cost=8.0,  # [cost] / [m]
-            orientation_cost=0.0,  # [cost] / [rad] — orientation tracking disabled for position-only debug
+            orientation_cost=1.0,  # [cost] / [rad] — start low while tuning RPY offsets
             lm_damping=1.0,
             gain=0.5,
         ),
@@ -71,7 +78,7 @@ OPENARM_BIMANUAL_IK_CONTROLLER_CFG = PinkIKControllerCfg(
             frame="openarm_right_hand",
             base_link_frame_name="openarm_body_link0",
             position_cost=8.0,
-            orientation_cost=0.0,  # orientation tracking disabled for position-only debug
+            orientation_cost=1.0,
             lm_damping=1.0,
             gain=0.5,
         ),
@@ -152,9 +159,9 @@ def _build_openarm_bimanual_pipeline():
         zero_out_xy_rotation=False,
         use_wrist_rotation=False,
         use_wrist_position=False,
-        target_offset_roll=0.0,
+        target_offset_roll=180.0,
         target_offset_pitch=0.0,
-        target_offset_yaw=-0.0,
+        target_offset_yaw=0.0,
     )
     left_se3 = Se3AbsRetargeter(left_se3_cfg, name="left_ee_pose")
     connected_left_se3 = left_se3.connect(
@@ -166,7 +173,7 @@ def _build_openarm_bimanual_pipeline():
         zero_out_xy_rotation=False,
         use_wrist_rotation=False,
         use_wrist_position=False,
-        target_offset_roll=0.0,
+        target_offset_roll=180.0,
         target_offset_pitch=0.0,
         target_offset_yaw=0.0,
     )
@@ -250,7 +257,7 @@ class OpenArmBimanualSceneCfg(InteractiveSceneCfg):
 
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[-0.35, 0.45, 0.6996], rot=[0, 0, 0, 1]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[-0.35, 0.35, 0.6996], rot=[0, 0, 0, 1]),
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/pick_place_task/pick_place_assets/steering_wheel.usd",
             scale=(0.75, 0.75, 0.75),
@@ -276,7 +283,7 @@ class OpenArmBimanualSceneCfg(InteractiveSceneCfg):
         # The bimanual asset sits on a wheeled base; pin it down for
         # stationary teleop.
         self.robot.spawn.articulation_props.fix_root_link = True
-        self.robot.init_state.pos = (0.0, 0.0, 0.6)
+        self.robot.init_state.pos = (0.0, 0.08, 0.63)
         # Rotate the robot 90° about world +Z. xyzw quat: (0, 0, sin(45°), cos(45°)).
         self.robot.init_state.rot = (0.0, 0.0, 0.70710678, 0.70710678)
 

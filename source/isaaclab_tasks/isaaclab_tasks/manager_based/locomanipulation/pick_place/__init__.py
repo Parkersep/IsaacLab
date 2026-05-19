@@ -37,3 +37,12 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+gym.register(
+    id="Isaac-Sandbox-OpenArm-Bimanual-Wheeled-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.openarm_bimanual_sandbox_env_cfg:OpenArmBimanualSandboxEnvCfg",
+    },
+    disable_env_checker=True,
+)
