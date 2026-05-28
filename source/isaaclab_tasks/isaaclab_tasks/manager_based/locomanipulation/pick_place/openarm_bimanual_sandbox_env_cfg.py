@@ -645,11 +645,13 @@ class OpenArmBimanualSandboxEnvCfg(ManagerBasedRLEnvCfg):
         # anchor sticks to the body link, so as the robot drives, the user's
         # view and EE world targets translate with it — the arms continue to
         # track Quest-relative motion while the chassis moves.
-        # anchor_rot xyzw (0, 0, 1, 0) = 180° about Z so the user spawns facing
-        # the robot's front instead of behind it.
+        # anchor_rot identity. The 180° rotation we tried earlier also flips
+        # the Quest controllers' coordinate frame, which broke the IK targets.
+        # To face the robot's front at spawn, use Quest's recenter feature
+        # (long-press the Meta button) while physically facing the robot.
         self.xr = XrCfg(
             anchor_pos=(0.0, 0.0, -0.55),
-            anchor_rot=(0.0, 0.0, 1.0, 0.0),
+            anchor_rot=(0.0, 0.0, 0.0, 1.0),
         )
         # Anchor on the lift_platform (not the chassis) so the camera position
         # follows arm height as the lift joint moves up/down. Rotation stays

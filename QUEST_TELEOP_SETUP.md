@@ -119,6 +119,12 @@ Wait for Isaac Sim to fully load and show "Teleoperation started."
 ./isaaclab.sh -p scripts/environments/teleoperation/teleop_se3_agent.py \
     --task Isaac-Sandbox-OpenArm-Bimanual-Wheeled-v0 \
     --visualizer kit --xr
+
+# OpenArm gantry sandbox — chest+arms on a 4-DOF cartesian carriage (no wheels, no wrist IK yet)
+# Left stick = glide X/Y (strafe supported), right stick X = yaw, grip triggers = raise/lower arms+chest.
+./isaaclab.sh -p scripts/environments/teleoperation/teleop_se3_agent.py \
+    --task Isaac-Sandbox-OpenArm-Gantry-v0 \
+    --visualizer kit --xr
 ```
 
 ### Recording demonstrations

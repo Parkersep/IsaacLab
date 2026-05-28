@@ -46,3 +46,12 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+gym.register(
+    id="Isaac-Sandbox-OpenArm-Gantry-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.openarm_gantry_env_cfg:OpenArmGantryEnvCfg",
+    },
+    disable_env_checker=True,
+)
